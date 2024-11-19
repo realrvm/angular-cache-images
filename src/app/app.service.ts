@@ -1,7 +1,18 @@
 import { HttpClient } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
 import { toObservable, toSignal } from '@angular/core/rxjs-interop';
-import { catchError, EMPTY, map, Observable, of, switchMap, tap } from 'rxjs';
+import {
+  catchError,
+  EMPTY,
+  filter,
+  from,
+  map,
+  mergeMap,
+  Observable,
+  of,
+  switchMap,
+  tap,
+} from 'rxjs';
 
 interface CacheImage {
   id: number;
@@ -20,33 +31,47 @@ export class AppService {
   public imgId = signal(1);
 
   private getImage$ = toObservable(this.imgId).pipe(
-    tap((iid) => {
-      const set = [...new Set([...this._ids(), iid])];
-      this._ids.set(
-        set.filter((id) => getRangeImagesIds(id, iid)).sort((a, b) => a - b),
-      );
-      this._cachedImages = this._cachedImages.filter(({ id }) =>
-        getRangeImagesIds(id, iid),
-      );
-    }),
-    map((id) => {
-      const index = this._cachedImages.findIndex((img) => img.id === id);
-      const url = `https://picsum.photos/id/${id}/200/300`;
-      console.log(this._cachedImages, this._ids(), this.imgId());
+    tap((imgId) => {
+      this._ids.set(getRangeArray(imgId));
 
-      return { index, url, id };
+      const filteredBlobs = this._cachedImages.filter(({ id }) =>
+        this._ids().includes(id),
+      );
+      this._cachedImages = getOriginals(filteredBlobs);
     }),
-    switchMap((val) => {
-      const { index, url, id } = val;
+    switchMap((id) => {
+      const index = this._cachedImages.findIndex((img) => img.id === id);
 
       if (index > -1) {
-        const image = this._cachedImages[index];
-        return of(image.blob);
+        return from(getRangeArray(id)).pipe(
+          mergeMap((ids) => {
+            const currentIndex = this._cachedImages.findIndex(
+              (img) => img.id === ids,
+            );
+
+            if (currentIndex === -1) {
+              const url = `https://picsum.photos/id/${ids}/200/300`;
+              this.http
+                .get(url, { responseType: 'blob' })
+                .pipe(tap((blob) => this.checkAndCacheImage(ids, blob)))
+                .subscribe();
+            }
+
+            const image = this._cachedImages[index];
+            return of(image.blob);
+          }),
+        );
       }
 
-      return this.http
-        .get(url, { responseType: 'blob' })
-        .pipe(tap((blob) => this.checkAndCacheImage(id, blob)));
+      return from(getRangeArray(id)).pipe(
+        mergeMap((ids) => {
+          const url = `https://picsum.photos/id/${ids}/200/300`;
+
+          return this.http
+            .get(url, { responseType: 'blob' })
+            .pipe(tap((blob) => this.checkAndCacheImage(ids, blob)));
+        }),
+      );
     }),
     catchError(() => {
       console.log('error');
@@ -63,6 +88,20 @@ export class AppService {
   }
 }
 
-function getRangeImagesIds(id: number, uid: number): boolean {
-  return id > uid - 3 && id < uid + 3;
+function getRangeArray(id: number): number[] {
+  if (id > 1) return [id - 1, id, id + 1, id + 2];
+  return [1, 2, 3];
+}
+
+function getOriginals(array: CacheImage[]): CacheImage[] {
+  const res: CacheImage[] = [];
+  const ids: number[] = [];
+
+  for (const item of array) {
+    if (!ids.includes(item.id)) {
+      ids.push(item.id);
+      res.push(item);
+    }
+  }
+  return res;
 }
